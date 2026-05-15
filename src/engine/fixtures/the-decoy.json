@@ -1,0 +1,27 @@
+{
+  "id": "sample-decoy-001",
+  "boardRadius": 2,
+  "palette": ["red", "blue"],
+  "sources": [
+    { "cell": [0, -2], "color": "blue", "direction": "SE" },
+    { "cell": [1, -2], "color": "red",  "direction": "SE" },
+    { "cell": [-2, 0], "color": "red",  "direction": "E"  }
+  ],
+  "targets": [
+    { "cell": [1, 1], "requires": "red"  },
+    { "cell": [0, 2], "requires": "blue" }
+  ],
+  "antiTargets": [],
+  "prisms": [],
+  "canonicalSolution": {
+    "firings": [
+      { "sourceIndex": 1 },
+      { "sourceIndex": 0 }
+    ],
+    "length": 2
+  },
+  "difficulty": {
+    "tier": "easy",
+    "score": 4.2
+  }
+}
