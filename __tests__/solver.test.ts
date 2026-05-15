@@ -1,6 +1,6 @@
 import {deserializePuzzle} from '../src/engine/puzzle';
 import {simulate} from '../src/engine/simulator';
-import {findAnySolution} from '../src/engine/solver';
+import {findAnySolution, solve} from '../src/engine/solver';
 import theDecoyJson from '../src/engine/fixtures/the-decoy.json';
 
 const decoy = deserializePuzzle(theDecoyJson);
@@ -163,5 +163,72 @@ describe('findAnySolution — budget cap', () => {
   test('default budget (100_000) is sufficient for The Decoy', () => {
     const result = findAnySolution(decoy);
     expect(result.solvable).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// solve() — elegant canonical
+// ---------------------------------------------------------------------------
+describe('solve — The Decoy', () => {
+  test('returns solvable: true with length: 2', () => {
+    const result = solve(decoy);
+    expect(result.solvable).toBe(true);
+    if (!result.solvable) return;
+    expect(result.length).toBe(2);
+  });
+
+  test('canonical uses sources 0 and 1 (not the decoy source 2)', () => {
+    const result = solve(decoy);
+    expect(result.solvable).toBe(true);
+    if (!result.solvable) return;
+    const indices = result.canonical.map(f => f.sourceIndex).sort();
+    expect(indices).toEqual([0, 1]);
+  });
+
+  test('canonical solution actually solves the puzzle', () => {
+    const result = solve(decoy);
+    expect(result.solvable).toBe(true);
+    if (!result.solvable) return;
+    const simResult = simulate(decoy, result.canonical);
+    const solved = decoy.targets.every((t, i) => simResult.targetsHit.get(i) === t.requires);
+    expect(solved).toBe(true);
+  });
+});
+
+describe('solve — single-solution puzzle', () => {
+  test('alternateCount: 1, elegantUnique: true', () => {
+    // One red source, one red target in its direct path.
+    const puzzle = makePuzzle({
+      id: 'single-solution',
+      sources: [{cell: [-3, 0], color: 'red', direction: 'E'}],
+      targets: [{cell: [0, 0], requires: 'red'}],
+      canonicalSolution: {firings: [{sourceIndex: 0}], length: 1},
+    });
+    const result = solve(puzzle);
+    expect(result.solvable).toBe(true);
+    if (!result.solvable) return;
+    expect(result.alternateCount).toBe(1);
+    expect(result.elegantUnique).toBe(true);
+  });
+});
+
+describe('solve — multi-solution puzzle', () => {
+  test('two independent sources both solving the puzzle → alternateCount > 1', () => {
+    // Source 0: red E from (-3,0) hits (0,0). Source 1: red W from (3,0) hits (0,0).
+    // Either alone solves. Both together also solve (redundant). alternateCount ≥ 2.
+    const puzzle = makePuzzle({
+      id: 'multi-solution',
+      sources: [
+        {cell: [-3, 0], color: 'red', direction: 'E'},
+        {cell: [3, 0], color: 'red', direction: 'W'},
+      ],
+      targets: [{cell: [0, 0], requires: 'red'}],
+      canonicalSolution: {firings: [{sourceIndex: 0}], length: 1},
+    });
+    const result = solve(puzzle);
+    expect(result.solvable).toBe(true);
+    if (!result.solvable) return;
+    expect(result.alternateCount).toBeGreaterThan(1);
+    expect(result.length).toBe(1);
   });
 });

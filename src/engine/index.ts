@@ -4,3 +4,4 @@ export * from './hex';
 export * from './puzzle';
 export * from './simulator';
 export * from './solver';
+export * from './feedback';
