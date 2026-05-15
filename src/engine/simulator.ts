@@ -41,22 +41,24 @@ function buildCellIndex<T>(
   return map;
 }
 
-function computePath(
+// Trace a single beam segment, collecting PathEntry items into `out`.
+// Each branch has its own `visited` set so sibling branches don't block each other.
+// `paintedCells` reflects only cells committed by PREVIOUS firings (atomicity).
+function traceBeam(
   puzzle: Puzzle,
-  sourceIndex: number,
-  paintedCells: Map<CellKey, Colour>,
+  startCell: Cell,
+  startDir: Direction,
+  paintedCells: ReadonlyMap<CellKey, Colour>,
   sourceAt: Map<CellKey, number>,
   targetAt: Map<CellKey, number>,
   antiTargetAt: Map<CellKey, number>,
   prismBendAt: Map<CellKey, number>,
-): {path: PathEntry[]; colour: Colour} {
-  const source = puzzle.sources[sourceIndex];
-  const colour = source.color;
-  const path: PathEntry[] = [];
-  const visited = new Set<CellKey>();
-
-  let dir: Direction = source.direction;
-  let cell = step(source.cell, dir);
+  prismSplitAt: Map<CellKey, number>,
+  visited: Set<CellKey>,
+  out: PathEntry[],
+): void {
+  let dir: Direction = startDir;
+  let cell = startCell;
 
   while (true) {
     if (!isInBoard(cell, puzzle.boardRadius)) break; // edge exit
@@ -75,29 +77,69 @@ function computePath(
     }
 
     // P-bend prism: redirect, do not paint
-    const prismIdx = prismBendAt.get(key);
-    if (prismIdx !== undefined) {
-      const prism = puzzle.prisms[prismIdx] as PrismBend;
+    const bendIdx = prismBendAt.get(key);
+    if (bendIdx !== undefined) {
+      const prism = puzzle.prisms[bendIdx] as PrismBend;
       dir = rotateCW(dir, prism.turns);
       cell = step(cell, dir);
       continue;
     }
 
+    // P-split prism: fork into two sub-beams (+1 CW and -1 CCW), do not paint prism cell
+    const splitIdx = prismSplitAt.get(key);
+    if (splitIdx !== undefined) {
+      const cwDir = rotateCW(dir, +1);
+      const ccwDir = rotateCW(dir, -1);
+      // Each branch gets its own visited set (cloned from parent so it inherits the pre-split path)
+      traceBeam(puzzle, step(cell, cwDir), cwDir, paintedCells, sourceAt, targetAt, antiTargetAt, prismBendAt, prismSplitAt, new Set(visited), out);
+      traceBeam(puzzle, step(cell, ccwDir), ccwDir, paintedCells, sourceAt, targetAt, antiTargetAt, prismBendAt, prismSplitAt, new Set(visited), out);
+      return; // prism cell not painted; both branches handled
+    }
+
     const tIdx = targetAt.get(key);
     if (tIdx !== undefined) {
-      path.push({type: 'target', cell, targetIndex: tIdx});
-      break;
+      out.push({type: 'target', cell, targetIndex: tIdx});
+      return;
     }
 
     const aIdx = antiTargetAt.get(key);
     if (aIdx !== undefined) {
-      path.push({type: 'antiTarget', cell, antiTargetIndex: aIdx});
-      break;
+      out.push({type: 'antiTarget', cell, antiTargetIndex: aIdx});
+      return;
     }
 
-    path.push({type: 'neutral', cell});
+    out.push({type: 'neutral', cell});
     cell = step(cell, dir);
   }
+}
+
+function computePath(
+  puzzle: Puzzle,
+  sourceIndex: number,
+  paintedCells: ReadonlyMap<CellKey, Colour>,
+  sourceAt: Map<CellKey, number>,
+  targetAt: Map<CellKey, number>,
+  antiTargetAt: Map<CellKey, number>,
+  prismBendAt: Map<CellKey, number>,
+  prismSplitAt: Map<CellKey, number>,
+): {path: PathEntry[]; colour: Colour} {
+  const source = puzzle.sources[sourceIndex];
+  const colour = source.color;
+  const path: PathEntry[] = [];
+
+  traceBeam(
+    puzzle,
+    step(source.cell, source.direction),
+    source.direction,
+    paintedCells,
+    sourceAt,
+    targetAt,
+    antiTargetAt,
+    prismBendAt,
+    prismSplitAt,
+    new Set<CellKey>(),
+    path,
+  );
 
   return {path, colour};
 }
@@ -111,8 +153,10 @@ export function simulate(puzzle: Puzzle, firings: readonly Firing[]): Simulation
   const targetAt = buildCellIndex(puzzle.targets, t => t.cell);
   const antiTargetAt = buildCellIndex(puzzle.antiTargets, a => a.cell);
   const prismBendAt = new Map<CellKey, number>();
+  const prismSplitAt = new Map<CellKey, number>();
   puzzle.prisms.forEach((p, i) => {
     if (p.type === 'bend') prismBendAt.set(cellKey(p.cell), i);
+    else if (p.type === 'split') prismSplitAt.set(cellKey(p.cell), i);
   });
 
   for (const firing of firings) {
@@ -124,9 +168,10 @@ export function simulate(puzzle: Puzzle, firings: readonly Firing[]): Simulation
       targetAt,
       antiTargetAt,
       prismBendAt,
+      prismSplitAt,
     );
 
-    // Atomic: commit all paint after full path is computed
+    // Atomic: commit all paint after full path (including all split branches) is computed
     for (const entry of path) {
       paintedCells.set(cellKey(entry.cell), colour);
       if (entry.type === 'target') {
