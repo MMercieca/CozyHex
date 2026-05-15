@@ -1,13 +1,14 @@
 import {type Cell, type Direction, DIRECTIONS, distance, enumerateBoard, isInBoard} from '../engine/hex';
 import {type Firing, type Puzzle, type Source, type Target} from '../engine/puzzle';
 import {cellKey, simulate} from '../engine/simulator';
-import {findAnySolution} from '../engine/solver';
+import {findAnySolution, solve, type SolverResult} from '../engine/solver';
 import {makeRng, rngPick, rngSample, type Rng} from './rng';
 
 export type GenerateParams = {
   boardRadius: number;
   sourceCount: number;
   targetCount: number;
+  decoyCount?: number;
   palette?: readonly string[];
   maxAttempts?: number;
 };
@@ -21,6 +22,60 @@ function inwardDirections(cell: Cell, boardRadius: number): Direction[] {
     const d = DIRECTIONS[dir];
     return isInBoard({q: cell.q + d.q, r: cell.r + d.r}, boardRadius);
   });
+}
+
+const MAX_DECOY_ATTEMPTS = 200;
+
+function addDecoys(
+  skeleton: Puzzle,
+  skeletonResult: Extract<SolverResult, {solvable: true}>,
+  decoyCount: number,
+  borderCells: Cell[],
+  rng: Rng,
+): Puzzle | null {
+  const usedCellKeys = new Set(skeleton.sources.map(s => cellKey(s.cell)));
+  let current = skeleton;
+
+  for (let d = 0; d < decoyCount; d++) {
+    let placed = false;
+
+    for (let attempt = 0; attempt < MAX_DECOY_ATTEMPTS; attempt++) {
+      const available = borderCells.filter(c => !usedCellKeys.has(cellKey(c)));
+      if (available.length === 0) return null;
+
+      const cell = rngPick(rng, available);
+      const dirs = inwardDirections(cell, current.boardRadius);
+      if (dirs.length === 0) continue;
+
+      const direction = rngPick(rng, dirs);
+      const color = rngPick(rng, current.palette);
+      const decorated: Puzzle = {
+        ...current,
+        sources: [...current.sources, {cell, color, direction} satisfies Source],
+      };
+
+      const decoratedResult = solve(decorated);
+      if (!decoratedResult.solvable) continue;
+
+      // Canonical must be identical and no new solutions introduced.
+      const sameLength = decoratedResult.canonical.length === skeletonResult.canonical.length;
+      const sameIndices =
+        sameLength &&
+        decoratedResult.canonical.every(
+          (f, i) => f.sourceIndex === skeletonResult.canonical[i].sourceIndex,
+        );
+      if (!sameIndices || decoratedResult.alternateCount !== skeletonResult.alternateCount) continue;
+
+      usedCellKeys.add(cellKey(cell));
+      current = decorated;
+      placed = true;
+      break;
+    }
+
+    if (!placed) return null;
+  }
+
+  return current;
 }
 
 function tryGenerate(
@@ -100,7 +155,14 @@ function tryGenerate(
   const solverResult = findAnySolution(puzzle);
   if (!solverResult.solvable) return null;
 
-  return puzzle;
+  const decoyCount = params.decoyCount ?? 0;
+  if (decoyCount === 0) return puzzle;
+
+  // Decoy decoration: need the full solve result to compare canonicals.
+  const skeletonResult = solve(puzzle);
+  if (!skeletonResult.solvable) return null;
+
+  return addDecoys(puzzle, skeletonResult, decoyCount, borderCells, rng);
 }
 
 export function generate(params: GenerateParams, rngSeed: number): Puzzle {
