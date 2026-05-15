@@ -1,5 +1,5 @@
-import {type Cell, DIRECTIONS, isInBoard} from './hex';
-import {type Colour, type Puzzle, type Firing} from './puzzle';
+import {type Cell, type Direction, DIRECTIONS, isInBoard} from './hex';
+import {type Colour, type Puzzle, type Firing, type PrismBend} from './puzzle';
 
 export type CellKey = string;
 
@@ -19,7 +19,15 @@ type PathEntry =
   | {type: 'target'; cell: Cell; targetIndex: number}
   | {type: 'antiTarget'; cell: Cell; antiTargetIndex: number};
 
-function step(cell: Cell, direction: keyof typeof DIRECTIONS): Cell {
+// Clockwise direction order for P-bend rotation
+const CW_DIRS: Direction[] = ['E', 'SE', 'SW', 'W', 'NW', 'NE'];
+
+export function rotateCW(direction: Direction, turns: number): Direction {
+  const idx = CW_DIRS.indexOf(direction);
+  return CW_DIRS[((idx + turns) % 6 + 6) % 6];
+}
+
+function step(cell: Cell, direction: Direction): Cell {
   const d = DIRECTIONS[direction];
   return {q: cell.q + d.q, r: cell.r + d.r};
 }
@@ -40,23 +48,38 @@ function computePath(
   sourceAt: Map<CellKey, number>,
   targetAt: Map<CellKey, number>,
   antiTargetAt: Map<CellKey, number>,
+  prismBendAt: Map<CellKey, number>,
 ): {path: PathEntry[]; colour: Colour} {
   const source = puzzle.sources[sourceIndex];
   const colour = source.color;
   const path: PathEntry[] = [];
+  const visited = new Set<CellKey>();
 
-  let cell = step(source.cell, source.direction);
+  let dir: Direction = source.direction;
+  let cell = step(source.cell, dir);
 
   while (true) {
     if (!isInBoard(cell, puzzle.boardRadius)) break; // edge exit
 
     const key = cellKey(cell);
 
+    if (visited.has(key)) break; // loop guard (e.g. prism ring)
+    visited.add(key);
+
     if (paintedCells.has(key)) break; // painted tile blocks beam
 
     // Source cells are transparent; beam passes through without painting
     if (sourceAt.has(key)) {
-      cell = step(cell, source.direction);
+      cell = step(cell, dir);
+      continue;
+    }
+
+    // P-bend prism: redirect, do not paint
+    const prismIdx = prismBendAt.get(key);
+    if (prismIdx !== undefined) {
+      const prism = puzzle.prisms[prismIdx] as PrismBend;
+      dir = rotateCW(dir, prism.turns);
+      cell = step(cell, dir);
       continue;
     }
 
@@ -73,7 +96,7 @@ function computePath(
     }
 
     path.push({type: 'neutral', cell});
-    cell = step(cell, source.direction);
+    cell = step(cell, dir);
   }
 
   return {path, colour};
@@ -87,6 +110,10 @@ export function simulate(puzzle: Puzzle, firings: readonly Firing[]): Simulation
   const sourceAt = buildCellIndex(puzzle.sources, s => s.cell);
   const targetAt = buildCellIndex(puzzle.targets, t => t.cell);
   const antiTargetAt = buildCellIndex(puzzle.antiTargets, a => a.cell);
+  const prismBendAt = new Map<CellKey, number>();
+  puzzle.prisms.forEach((p, i) => {
+    if (p.type === 'bend') prismBendAt.set(cellKey(p.cell), i);
+  });
 
   for (const firing of firings) {
     const {path, colour} = computePath(
@@ -96,6 +123,7 @@ export function simulate(puzzle: Puzzle, firings: readonly Firing[]): Simulation
       sourceAt,
       targetAt,
       antiTargetAt,
+      prismBendAt,
     );
 
     // Atomic: commit all paint after full path is computed
