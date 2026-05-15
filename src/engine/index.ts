@@ -5,3 +5,5 @@ export * from './puzzle';
 export * from './simulator';
 export * from './solver';
 export * from './feedback';
+export * from './scorer';
+export * from './scorer-weights';

@@ -40,7 +40,7 @@ export type CanonicalSolution = {
   readonly length: number;
 };
 
-export type DifficultyTier = 'easy' | 'medium' | 'hard';
+export type DifficultyTier = 'easy' | 'medium' | 'hard' | 'expert';
 
 export type Difficulty = {
   readonly tier: DifficultyTier;
@@ -62,7 +62,7 @@ export type Puzzle = {
 // --- Validation helpers ---
 
 const VALID_DIRECTIONS = new Set<string>(['E', 'NE', 'NW', 'W', 'SW', 'SE']);
-const VALID_TIERS = new Set<string>(['easy', 'medium', 'hard']);
+const VALID_TIERS = new Set<string>(['easy', 'medium', 'hard', 'expert']);
 
 function fail(msg: string): never {
   throw new Error(`Invalid puzzle: ${msg}`);
@@ -174,7 +174,7 @@ function parseCanonicalSolution(raw: unknown, sourceCount: number): CanonicalSol
 function parseDifficulty(raw: unknown): Difficulty {
   const obj = requireObject(raw, 'difficulty');
   const tier = requireString(obj.tier, 'difficulty.tier');
-  if (!VALID_TIERS.has(tier)) fail(`difficulty.tier must be "easy", "medium", or "hard", got "${tier}"`);
+  if (!VALID_TIERS.has(tier)) fail(`difficulty.tier must be "easy", "medium", "hard", or "expert", got "${tier}"`);
   const score = requireNumber(obj.score, 'difficulty.score');
   return {tier: tier as DifficultyTier, score};
 }
