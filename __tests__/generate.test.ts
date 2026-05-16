@@ -144,6 +144,65 @@ describe('generate — anti-targets', () => {
   });
 });
 
+describe('generate — P-bend prisms', () => {
+  const PARAMS = {boardRadius: 2, sourceCount: 1, targetCount: 1, pBendCount: 1};
+
+  test('generates a puzzle with exactly 1 P-bend prism', () => {
+    const puzzle = generate(PARAMS, 42);
+    const bends = puzzle.prisms.filter(p => p.type === 'bend');
+    expect(bends).toHaveLength(1);
+  });
+
+  test('canonical solution solves the puzzle through the prism', () => {
+    const puzzle = generate(PARAMS, 42);
+    const sim = simulate(puzzle, puzzle.canonicalSolution.firings);
+    expect(puzzle.targets.every((t, i) => sim.targetsHit.get(i) === t.requires)).toBe(true);
+  });
+
+  test('removing the prism makes the puzzle unsolvable (prism is load-bearing)', () => {
+    const puzzle = generate(PARAMS, 42);
+    const withoutPrisms = {...puzzle, prisms: []};
+    expect(findAnySolution(withoutPrisms).solvable).toBe(false);
+  });
+
+  test('deterministic with the same seed', () => {
+    const p1 = generate(PARAMS, 42);
+    const p2 = generate(PARAMS, 42);
+    expect(p1.prisms).toEqual(p2.prisms);
+    expect(p1.targets).toEqual(p2.targets);
+  });
+});
+
+describe('generate — P-split prisms', () => {
+  const PARAMS = {boardRadius: 3, sourceCount: 1, targetCount: 1, pSplitCount: 1};
+
+  test('generates a puzzle with exactly 1 P-split prism and at least 2 targets', () => {
+    const puzzle = generate(PARAMS, 42);
+    const splits = puzzle.prisms.filter(p => p.type === 'split');
+    expect(splits).toHaveLength(1);
+    expect(puzzle.targets.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('canonical solution hits all targets through the split', () => {
+    const puzzle = generate(PARAMS, 42);
+    const sim = simulate(puzzle, puzzle.canonicalSolution.firings);
+    expect(puzzle.targets.every((t, i) => sim.targetsHit.get(i) === t.requires)).toBe(true);
+  });
+
+  test('removing the split makes the puzzle unsolvable', () => {
+    const puzzle = generate(PARAMS, 42);
+    const withoutSplits = {...puzzle, prisms: puzzle.prisms.filter(p => p.type !== 'split')};
+    expect(findAnySolution(withoutSplits).solvable).toBe(false);
+  });
+
+  test('deterministic with the same seed', () => {
+    const p1 = generate(PARAMS, 42);
+    const p2 = generate(PARAMS, 42);
+    expect(p1.prisms).toEqual(p2.prisms);
+    expect(p1.targets).toEqual(p2.targets);
+  });
+});
+
 describe('generate — error handling', () => {
   test('throws when params are impossible to satisfy', () => {
     // radius 1 has 6 border cells; requesting 10 sources is impossible

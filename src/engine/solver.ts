@@ -84,7 +84,7 @@ export function findAnySolution(
 // axes (passing through origin). Lower = more symmetric.
 // Axes at 0°, 30°, 60°, 90°, 120°, 150° in Cartesian hex space.
 // Hex Cartesian: x = q + r*0.5, y = r*(sqrt(3)/2)
-function symmetryScore(paintedCells: Map<string, string>): number {
+function symmetryScore(paintedCells: ReadonlyMap<string, string>): number {
   const SQRT3_2 = Math.sqrt(3) / 2;
   // Unit normals for the 6 axes (each axis defined by angle θ; normal is perpendicular)
   const axes: Array<{nx: number; ny: number}> = [
@@ -116,7 +116,7 @@ function isSolved(puzzle: Puzzle, firings: Firing[]): boolean {
   return puzzle.targets.every((t, i) => result.targetsHit.get(i) === t.requires);
 }
 
-function getPaintedCells(puzzle: Puzzle, firings: Firing[]): Map<string, string> {
+function getPaintedCells(puzzle: Puzzle, firings: Firing[]): ReadonlyMap<string, string> {
   return simulate(puzzle, firings).paintedCells;
 }
 

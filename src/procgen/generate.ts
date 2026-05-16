@@ -1,13 +1,15 @@
 import {type Cell, type Direction, DIRECTIONS, distance, enumerateBoard, isInBoard} from '../engine/hex';
-import {type Firing, type Puzzle, type Source, type Target} from '../engine/puzzle';
-import {cellKey, simulate} from '../engine/simulator';
+import {type Firing, type Prism, type PrismBend, type PrismSplit, type Puzzle, type Source, type Target} from '../engine/puzzle';
+import {cellKey, rotateCW, simulate} from '../engine/simulator';
 import {findAnySolution, solve, type SolverResult} from '../engine/solver';
-import {makeRng, rngPick, rngSample, type Rng} from './rng';
+import {makeRng, rngInt, rngPick, rngSample, type Rng} from './rng';
 
 export type GenerateParams = {
   boardRadius: number;
   sourceCount: number;
   targetCount: number;
+  pBendCount?: number;
+  pSplitCount?: number;
   decoyCount?: number;
   antiTargetCount?: number;
   palette?: readonly string[];
@@ -23,6 +25,234 @@ function inwardDirections(cell: Cell, boardRadius: number): Direction[] {
     const d = DIRECTIONS[dir];
     return isInBoard({q: cell.q + d.q, r: cell.r + d.r}, boardRadius);
   });
+}
+
+// Clockwise direction ring used for prism turn arithmetic.
+const CW_DIRS: Direction[] = ['E', 'SE', 'SW', 'W', 'NW', 'NE'];
+
+function cwIdx(dir: Direction): number {
+  return CW_DIRS.indexOf(dir);
+}
+
+function stepCell(cell: Cell, dir: Direction): Cell {
+  const d = DIRECTIONS[dir];
+  return {q: cell.q + d.q, r: cell.r + d.r};
+}
+
+// Trace a beam with direction tracking, respecting existing bend prisms and paint blocking.
+// Prism cells are skipped (not added to path). Stops at board edge or blocked cell.
+function tracePath(
+  start: Cell,
+  startDir: Direction,
+  boardRadius: number,
+  bendPrismsAt: Map<string, number>,
+  sourceKeys: Set<string>,
+  blocked: ReadonlyMap<string, string>,
+): {cell: Cell; inDir: Direction}[] {
+  const path: {cell: Cell; inDir: Direction}[] = [];
+  let cell = start;
+  let dir = startDir;
+  const visited = new Set<string>();
+
+  while (isInBoard(cell, boardRadius)) {
+    const key = cellKey(cell);
+    if (visited.has(key)) break;
+    visited.add(key);
+    if (blocked.has(key)) break;
+    if (sourceKeys.has(key)) {cell = stepCell(cell, dir); continue;}
+    const turns = bendPrismsAt.get(key);
+    if (turns !== undefined) {dir = rotateCW(dir, turns); cell = stepCell(cell, dir); continue;}
+    path.push({cell, inDir: dir});
+    cell = stepCell(cell, dir);
+  }
+
+  return path;
+}
+
+const MAX_PRISM_ATTEMPTS = 200;
+
+// Inject P-bend prisms into the canonical beam paths, relocating targets to the bent paths.
+function addPBends(puzzle: Puzzle, pBendCount: number, rng: Rng): Puzzle | null {
+  let current = puzzle;
+
+  for (let p = 0; p < pBendCount; p++) {
+    let placed = false;
+
+    for (let attempt = 0; attempt < MAX_PRISM_ATTEMPTS; attempt++) {
+      const canonFirings = current.canonicalSolution.firings;
+      const canonIdx = rngInt(rng, canonFirings.length);
+      const sourceIdx = canonFirings[canonIdx].sourceIndex;
+      const source = current.sources[sourceIdx];
+
+      const bendPrismsAt = new Map<string, number>();
+      for (const pr of current.prisms) {
+        if (pr.type === 'bend') bendPrismsAt.set(cellKey(pr.cell), pr.turns);
+      }
+      const sourceKeys = new Set(current.sources.map(s => cellKey(s.cell)));
+      const targetMap = new Map(current.targets.map((t, i) => [cellKey(t.cell), i]));
+
+      const earlierFirings = canonFirings.slice(0, canonIdx);
+      const blocked = earlierFirings.length > 0
+        ? simulate(current, earlierFirings).paintedCells
+        : (new Map() as ReadonlyMap<string, string>);
+
+      const path = tracePath(
+        stepCell(source.cell, source.direction),
+        source.direction,
+        current.boardRadius,
+        bendPrismsAt,
+        sourceKeys,
+        blocked,
+      );
+
+      // Find first target hit; need at least one neutral cell before it.
+      const hitIdx = path.findIndex(({cell}) => targetMap.has(cellKey(cell)));
+      if (hitIdx < 1) continue;
+
+      const hitTargetListIdx = targetMap.get(cellKey(path[hitIdx].cell))!;
+      const neutralsBefore = path.slice(0, hitIdx);
+
+      // Pick bend cell and outgoing direction.
+      const {cell: bendCell, inDir} = rngPick(rng, neutralsBefore);
+      const oppDir = CW_DIRS[(cwIdx(inDir) + 3) % 6];
+      const validOutDirs = CW_DIRS.filter(
+        d => d !== inDir && d !== oppDir && isInBoard(stepCell(bendCell, d), current.boardRadius),
+      );
+      if (validOutDirs.length === 0) continue;
+
+      const outDir = rngPick(rng, validOutDirs);
+      const turns = ((cwIdx(outDir) - cwIdx(inDir)) + 6) % 6;
+
+      // Trace bent path; candidate target must not overlap existing targets.
+      const bentPath = tracePath(
+        stepCell(bendCell, outDir), outDir, current.boardRadius,
+        bendPrismsAt, sourceKeys, blocked,
+      ).filter(({cell}) => !targetMap.has(cellKey(cell)));
+      if (bentPath.length === 0) continue;
+
+      const newTargetCell = rngPick(rng, bentPath).cell;
+
+      const newPrism: PrismBend = {type: 'bend', cell: bendCell, turns};
+      const newTargets = current.targets.map((t, i) =>
+        i === hitTargetListIdx ? {...t, cell: newTargetCell} : t,
+      );
+      const decorated: Puzzle = {
+        ...current,
+        targets: newTargets,
+        prisms: [...current.prisms, newPrism],
+      };
+
+      const sim = simulate(decorated, decorated.canonicalSolution.firings);
+      if (!decorated.targets.every((t, i) => sim.targetsHit.get(i) === t.requires)) continue;
+      if (!findAnySolution(decorated).solvable) continue;
+
+      current = decorated;
+      placed = true;
+      break;
+    }
+
+    if (!placed) return null;
+  }
+
+  return current;
+}
+
+// Inject P-split prisms into canonical beam paths.
+// Each split replaces one existing target with two fork-path targets.
+function addPSplits(puzzle: Puzzle, pSplitCount: number, rng: Rng): Puzzle | null {
+  let current = puzzle;
+
+  for (let p = 0; p < pSplitCount; p++) {
+    let placed = false;
+
+    for (let attempt = 0; attempt < MAX_PRISM_ATTEMPTS; attempt++) {
+      const canonFirings = current.canonicalSolution.firings;
+      const canonIdx = rngInt(rng, canonFirings.length);
+      const sourceIdx = canonFirings[canonIdx].sourceIndex;
+      const source = current.sources[sourceIdx];
+
+      const bendPrismsAt = new Map<string, number>();
+      for (const pr of current.prisms) {
+        if (pr.type === 'bend') bendPrismsAt.set(cellKey(pr.cell), pr.turns);
+      }
+      const sourceKeys = new Set(current.sources.map(s => cellKey(s.cell)));
+      const targetMap = new Map(current.targets.map((t, i) => [cellKey(t.cell), i]));
+
+      const earlierFirings = canonFirings.slice(0, canonIdx);
+      const blocked = earlierFirings.length > 0
+        ? simulate(current, earlierFirings).paintedCells
+        : (new Map() as ReadonlyMap<string, string>);
+
+      const path = tracePath(
+        stepCell(source.cell, source.direction),
+        source.direction,
+        current.boardRadius,
+        bendPrismsAt,
+        sourceKeys,
+        blocked,
+      );
+
+      // Find neutral cells on the path for candidate split points.
+      const neutrals = path.filter(({cell}) => !targetMap.has(cellKey(cell)));
+      if (neutrals.length === 0) continue;
+
+      const {cell: splitCell, inDir} = rngPick(rng, neutrals);
+      const cwForkDir = CW_DIRS[(cwIdx(inDir) + 1) % 6];
+      const ccwForkDir = CW_DIRS[(cwIdx(inDir) + 5) % 6];
+
+      const cwFork = tracePath(
+        stepCell(splitCell, cwForkDir), cwForkDir, current.boardRadius,
+        bendPrismsAt, sourceKeys, blocked,
+      ).filter(({cell}) => !targetMap.has(cellKey(cell)));
+
+      const ccwFork = tracePath(
+        stepCell(splitCell, ccwForkDir), ccwForkDir, current.boardRadius,
+        bendPrismsAt, sourceKeys, blocked,
+      ).filter(({cell}) => !targetMap.has(cellKey(cell)));
+
+      if (cwFork.length === 0 || ccwFork.length === 0) continue;
+
+      const t1Cell = rngPick(rng, cwFork).cell;
+      const t2Cell = rngPick(rng, ccwFork).cell;
+      if (cellKey(t1Cell) === cellKey(t2Cell)) continue;
+
+      const color = source.color;
+      const splitPrism: PrismSplit = {type: 'split', cell: splitCell, orientation: inDir};
+
+      // Replace the target this source was heading for (if any) with the two fork targets.
+      const hitIdx = path.findIndex(({cell}) => targetMap.has(cellKey(cell)));
+      let newTargets: Target[];
+      if (hitIdx >= 0) {
+        const hitTargetListIdx = targetMap.get(cellKey(path[hitIdx].cell))!;
+        newTargets = [
+          ...current.targets.slice(0, hitTargetListIdx),
+          ...current.targets.slice(hitTargetListIdx + 1),
+          {cell: t1Cell, requires: color},
+          {cell: t2Cell, requires: color},
+        ];
+      } else {
+        newTargets = [...current.targets, {cell: t1Cell, requires: color}, {cell: t2Cell, requires: color}];
+      }
+
+      const decorated: Puzzle = {
+        ...current,
+        targets: newTargets,
+        prisms: [...current.prisms, splitPrism],
+      };
+
+      const sim = simulate(decorated, decorated.canonicalSolution.firings);
+      if (!decorated.targets.every((t, i) => sim.targetsHit.get(i) === t.requires)) continue;
+      if (!findAnySolution(decorated).solvable) continue;
+
+      current = decorated;
+      placed = true;
+      break;
+    }
+
+    if (!placed) return null;
+  }
+
+  return current;
 }
 
 const MAX_DECOY_ATTEMPTS = 200;
@@ -195,10 +425,24 @@ function tryGenerate(
   const solverResult = findAnySolution(puzzle);
   if (!solverResult.solvable) return null;
 
+  const pBendCount = params.pBendCount ?? 0;
+  const pSplitCount = params.pSplitCount ?? 0;
   const decoyCount = params.decoyCount ?? 0;
   const antiTargetCount = params.antiTargetCount ?? 0;
 
   let current: Puzzle = puzzle;
+
+  if (pBendCount > 0) {
+    const withBends = addPBends(current, pBendCount, rng);
+    if (withBends === null) return null;
+    current = withBends;
+  }
+
+  if (pSplitCount > 0) {
+    const withSplits = addPSplits(current, pSplitCount, rng);
+    if (withSplits === null) return null;
+    current = withSplits;
+  }
 
   if (decoyCount > 0) {
     const skeletonResult = solve(puzzle);
