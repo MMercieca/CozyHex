@@ -1,6 +1,6 @@
 import {generate} from '../src/procgen/generate';
 import {findAnySolution, solve} from '../src/engine/solver';
-import {simulate} from '../src/engine/simulator';
+import {simulate, cellKey} from '../src/engine/simulator';
 
 const SMALL: {boardRadius: number; sourceCount: number; targetCount: number} = {
   boardRadius: 2,
@@ -90,6 +90,57 @@ describe('generate — decoy sources', () => {
     const p2 = generate(PARAMS, 99);
     expect(p1.sources).toEqual(p2.sources);
     expect(p1.targets).toEqual(p2.targets);
+  });
+});
+
+describe('generate — anti-targets', () => {
+  // 1 canonical source, 1 decoy, 1 anti-target.
+  const PARAMS = {boardRadius: 2, sourceCount: 1, targetCount: 1, decoyCount: 1, antiTargetCount: 1};
+
+  test('has the requested number of anti-targets', () => {
+    const puzzle = generate(PARAMS, 42);
+    expect(puzzle.antiTargets).toHaveLength(1);
+  });
+
+  test('canonical solution does not paint any anti-target', () => {
+    const puzzle = generate(PARAMS, 42);
+    const sim = simulate(puzzle, puzzle.canonicalSolution.firings);
+    expect(sim.antiTargetsPainted.size).toBe(0);
+  });
+
+  test('anti-target cell is reachable by some source beam (useful, not a dead cell)', () => {
+    const puzzle = generate(PARAMS, 42);
+    // All-source no-target sim is the full reachable set.
+    const naked = {...puzzle, targets: [], antiTargets: []};
+    const allFirings = puzzle.sources.map((_, i) => ({sourceIndex: i}));
+    const allPainted = simulate(naked, allFirings).paintedCells;
+    for (const at of puzzle.antiTargets) {
+      expect(allPainted.has(cellKey(at.cell))).toBe(true);
+    }
+  });
+
+  test('a non-canonical ordering paints the anti-target (anti-target distinguishes Perfect from Solved)', () => {
+    // Sweep seeds to find a case where firing the decoy alone in a no-target sim
+    // reaches the anti-target cell. Guaranteed by construction: the anti-target is
+    // drawn from allPainted − canonicalPainted, so some non-canonical source reaches it.
+    let found = false;
+    for (let seed = 1; seed <= 100 && !found; seed++) {
+      const puzzle = generate(PARAMS, seed);
+      if (!puzzle.antiTargets.length) continue;
+      const naked = {...puzzle, targets: [], antiTargets: []};
+      // Fire only non-canonical sources (decoys are at index >= sourceCount=1).
+      for (let i = 1; i < puzzle.sources.length && !found; i++) {
+        const sim = simulate(naked, [{sourceIndex: i}]);
+        if (sim.paintedCells.has(cellKey(puzzle.antiTargets[0].cell))) found = true;
+      }
+    }
+    expect(found).toBe(true);
+  });
+
+  test('deterministic with the same seed', () => {
+    const p1 = generate(PARAMS, 55);
+    const p2 = generate(PARAMS, 55);
+    expect(p1.antiTargets).toEqual(p2.antiTargets);
   });
 });
 

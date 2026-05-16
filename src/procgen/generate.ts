@@ -9,6 +9,7 @@ export type GenerateParams = {
   sourceCount: number;
   targetCount: number;
   decoyCount?: number;
+  antiTargetCount?: number;
   palette?: readonly string[];
   maxAttempts?: number;
 };
@@ -76,6 +77,45 @@ function addDecoys(
   }
 
   return current;
+}
+
+function addAntiTargets(
+  puzzle: Puzzle,
+  antiTargetCount: number,
+  rng: Rng,
+): Puzzle | null {
+  // Cells traversed by canonical beams — anti-targets must not intersect these.
+  const canonicalPainted = simulate(puzzle, puzzle.canonicalSolution.firings).paintedCells;
+
+  // All cells any source can reach on an unobstructed board.
+  const naked: Puzzle = {...puzzle, targets: [], antiTargets: []};
+  const allSourceFirings: Firing[] = puzzle.sources.map((_, i) => ({sourceIndex: i}));
+  const allPainted = simulate(naked, allSourceFirings).paintedCells;
+
+  const occupiedKeys = new Set([
+    ...puzzle.sources.map(s => cellKey(s.cell)),
+    ...puzzle.targets.map(t => cellKey(t.cell)),
+  ]);
+
+  // Candidates: reachable by some beam, outside the canonical path, not already occupied.
+  const candidates = [...allPainted.keys()].filter(
+    k => !canonicalPainted.has(k) && !occupiedKeys.has(k),
+  );
+
+  if (candidates.length < antiTargetCount) return null;
+
+  const antiTargets = rngSample(rng, candidates, antiTargetCount).map(key => {
+    const [q, r] = key.split(',').map(Number);
+    return {cell: {q, r}};
+  });
+
+  const decorated: Puzzle = {...puzzle, antiTargets};
+
+  // Safety net: canonical must not paint any anti-target once they're placed.
+  const validationSim = simulate(decorated, decorated.canonicalSolution.firings);
+  if (validationSim.antiTargetsPainted.size > 0) return null;
+
+  return decorated;
 }
 
 function tryGenerate(
@@ -156,13 +196,25 @@ function tryGenerate(
   if (!solverResult.solvable) return null;
 
   const decoyCount = params.decoyCount ?? 0;
-  if (decoyCount === 0) return puzzle;
+  const antiTargetCount = params.antiTargetCount ?? 0;
 
-  // Decoy decoration: need the full solve result to compare canonicals.
-  const skeletonResult = solve(puzzle);
-  if (!skeletonResult.solvable) return null;
+  let current: Puzzle = puzzle;
 
-  return addDecoys(puzzle, skeletonResult, decoyCount, borderCells, rng);
+  if (decoyCount > 0) {
+    const skeletonResult = solve(puzzle);
+    if (!skeletonResult.solvable) return null;
+    const withDecoys = addDecoys(puzzle, skeletonResult, decoyCount, borderCells, rng);
+    if (withDecoys === null) return null;
+    current = withDecoys;
+  }
+
+  if (antiTargetCount > 0) {
+    const withAntiTargets = addAntiTargets(current, antiTargetCount, rng);
+    if (withAntiTargets === null) return null;
+    current = withAntiTargets;
+  }
+
+  return current;
 }
 
 export function generate(params: GenerateParams, rngSeed: number): Puzzle {
